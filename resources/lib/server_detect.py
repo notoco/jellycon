@@ -229,6 +229,7 @@ def check_server(force=False, change_user=False, notify=False):
             something_changed = True
             selected_user = users[user_selection]
             quick_connect = selected_user.getProperty("quickconnect") == "true"
+            password = None
             count = 0
             if quick_connect:
                 # Show progress dialog with Quick Connect instructions
@@ -313,6 +314,7 @@ def check_server(force=False, change_user=False, notify=False):
 
                     auth_payload = {'username': selected_user_name, 'pw': password}
                     auth = api.authenticate(auth_payload)
+                    # password stays in scope for save_user_details below
                     if not auth:
                         # Login failed, we don't want to change anything
                         something_changed = False
@@ -328,7 +330,7 @@ def check_server(force=False, change_user=False, notify=False):
             else:
                 token = user_details.get('token')
                 user_id = user_details.get('user_id')
-            save_user_details(selected_user_name, user_id, token)
+            save_user_details(selected_user_name, user_id, token, password=password)
             xbmc.executebuiltin("ActivateWindow(Home)")
             if "estuary_jellycon" in xbmc.getSkinDir():
                 xbmc.executebuiltin("SetFocus(9000, 0, absolute)")

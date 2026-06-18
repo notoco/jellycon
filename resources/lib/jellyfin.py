@@ -5,10 +5,11 @@ from __future__ import (
 import json
 
 import requests
+import xbmc
 import xbmcaddon
 from kodi_six.utils import py2_decode
 
-from .utils import get_device_id, get_version, load_user_details
+from .utils import get_device_id, get_version, load_user_details, save_user_details
 from .lazylogger import LazyLogger
 
 log = LazyLogger(__name__)
@@ -25,6 +26,7 @@ class API:
         self.headers = {}
         self.create_headers()
         self.verify_cert = settings.getSetting('verify_cert') == 'true'
+        self._token_cleared = False
 
     def get(self, path):
         if 'Authorization' not in self.headers or self.token not in self.headers:
@@ -37,8 +39,10 @@ class API:
 
         url = '{}{}'.format(self.server, path)
 
+        r = None
         try:
-            r = requests.get(url, headers=self.headers, verify=self.verify_cert, timeout=(5,60))
+            r = requests.get(url, headers=self.headers, verify=self.verify_cert, timeout=(5, 60))
+            r.raise_for_status()
             try:
                 '''
                 The requests library defaults to using simplejson to handle
@@ -47,11 +51,17 @@ class API:
                 and just parse the json ourselves.  Fall back to using
                 requests/simplejson if there's a parsing error.
                 '''
-                r.raise_for_status()
                 response_data = json.loads(r.text)
             except ValueError:
                 response_data = r.json()
-        except Exception:
+        except requests.exceptions.HTTPError as e:
+            if r is not None and r.status_code == 401:
+                self._handle_auth_expired()
+            else:
+                log.error('GET HTTP error: {} | url={}'.format(e, path))
+            response_data = {}
+        except Exception as e:
+            log.error('GET failed: {} | url={}'.format(e, path))
             response_data = {}
         return response_data
 
@@ -61,14 +71,20 @@ class API:
 
         url = '{}{}'.format(self.server, url)
 
+        r = None
         try:
             r = requests.post(url, json=payload, headers=self.headers, verify=self.verify_cert, timeout=5)
+            r.raise_for_status()
             try:
                 # Much faster on low power devices, see above comment
                 response_data = json.loads(r.text)
             except ValueError:
                 response_data = r.json()
-        except Exception:
+        except requests.exceptions.HTTPError as e:
+            log.error('POST HTTP error: {} | url={}'.format(e, url))
+            response_data = {}
+        except Exception as e:
+            log.error('POST failed: {} | url={}'.format(e, url))
             response_data = {}
         return response_data
 
@@ -135,11 +151,38 @@ class API:
                 self.token = token
                 headers['Authorization'] += ", Token={}".format(self.token)
 
-        # Kodi doesn't support br compression, exclude it
-        headers['Accept-Encoding'] = 'gzip, deflate, zstd'
+        # Kodi doesn't support br or zstd compression, exclude them
+        headers['Accept-Encoding'] = 'gzip, deflate'
 
         # Make headers available to api calls
         self.headers = headers
+
+    def _handle_auth_expired(self):
+        log.error('Authentication token expired (401) - attempting silent re-authentication')
+        settings = xbmcaddon.Addon()
+        username = settings.getSetting('username')
+
+        # Try silent re-auth using saved password before touching auth.json
+        user_details = load_user_details()
+        saved_password = user_details.get('password')
+        if username and saved_password is not None:
+            self.token = None
+            self.create_headers(True)
+            auth = self.authenticate({'username': username, 'pw': saved_password})
+            if auth:
+                log.info('Silent re-authentication successful for {}'.format(username))
+                self._token_cleared = False
+                return
+
+        # No saved password or re-auth failed — clear token and prompt user
+        self.token = None
+        if username and self.user_id:
+            save_user_details(username, self.user_id, None)
+        if not self._token_cleared:
+            self._token_cleared = True
+            xbmc.executebuiltin(
+                'Notification(JellyCon,Session expired. Please re-open the addon to log in again.,8000,DefaultIconError.png)'
+            )
 
     def post_capabilities(self):
         url = '/Sessions/Capabilities/Full'

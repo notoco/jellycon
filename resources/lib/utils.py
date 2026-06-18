@@ -193,10 +193,12 @@ def get_version():
     return version
 
 
-def save_user_details(user_name, user_id, token):
+def save_user_details(user_name, user_id, token, password=None):
     settings = xbmcaddon.Addon()
     save_user_to_settings = settings.getSetting(
         'save_user_to_settings') == 'true'
+    allow_password_saving = settings.getSetting(
+        'allow_password_saving') == 'true'
     addon_data = translate_path(xbmcaddon.Addon().getAddonInfo('profile'))
 
     # Save to a config file for reference later if desired
@@ -208,10 +210,18 @@ def save_user_details(user_name, user_id, token):
             # File doesn't exist or is empty
             auth_data = {}
 
-        auth_data[user_name] = {
+        existing = auth_data.get(user_name, {})
+        new_entry = {
             'user_id': user_id,
-            'token': token
+            'token': token,
         }
+        if allow_password_saving and password is not None:
+            new_entry['password'] = password
+        elif existing.get('password'):
+            # Preserve previously saved password when only updating token
+            new_entry['password'] = existing['password']
+
+        auth_data[user_name] = new_entry
 
         with open(os.path.join(addon_data, 'auth.json'), 'wb') as outfile:
             data = json.dumps(
@@ -245,8 +255,8 @@ def load_user_details():
             return {}
 
         user_data = auth_data.get(user_name, {})
-        # User doesn't exist yet
-        if not user_data:
+        # User doesn't exist yet, or token was cleared (e.g. after expiry)
+        if not user_data or not user_data.get('token'):
             return {}
 
         user_id = user_data.get('user_id')
@@ -257,6 +267,7 @@ def load_user_details():
         user_details['user_name'] = user_name
         user_details['user_id'] = user_id
         user_details['token'] = auth_token
+        user_details['password'] = user_data.get('password')
         return user_details
 
     else:
@@ -279,12 +290,16 @@ def get_saved_users():
 
     users = []
     for user, values in auth_data.items():
+        if not values.get('token'):
+            continue
         users.append(
             {
                 'Name': user,
                 'Id': values.get('user_id'),
                 # We need something here for the listitem function
-                'Configuration': {'Dummy': True}
+                'Configuration': {'Dummy': True},
+                # Assume password — prompts correctly on re-login after token expiry
+                'HasPassword': True,
             }
         )
 
